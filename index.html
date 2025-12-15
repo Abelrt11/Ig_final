@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <title>Basic Scene</title>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, user-scalable=no"
+    />
+    <link type="text/css" rel="stylesheet" href="style.css" />
+    <script
+      src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r126/three.js"
+      crossorigin="anonymous"
+    ></script>
+  </head>
+
+  <body>
+    <script type="module">
+      import { VRButton } from "https://unpkg.com/three@0.126.0/examples/jsm/webxr/VRButton.js";
+      import { FBXLoader } from "https://unpkg.com/three@0.126.0/examples/jsm/loaders/FBXLoader.js";
+      import { XRControllerModelFactory } from "https://unpkg.com/three@0.126.0/examples/jsm/webxr/XRControllerModelFactory.js";
+
+      let camera, scene, renderer;
+
+      // Estado grab
+      let checkGrabbingR = false;
+
+      // Controladores
+      let controllerL, controllerR;
+
+      // Loader / params
+      const textureLoader = new THREE.TextureLoader();
+      const controllerActionRadius = 0.1;
+
+      // New
+      let floor = [];
+      let objects = [];
+      let userRig; // importante: debe ser global
+
+      initConfiguration();
+      initScene();
+
+      function initConfiguration() {
+        const container = document.createElement("div");
+        document.body.appendChild(container);
+
+        // Scene
+        scene = new THREE.Scene();
+
+        // Sky
+        const textureSky = textureLoader.load("https://h6qcvv.csb.app/sky.jpg");
+        const materialSky = new THREE.MeshBasicMaterial({
+          map: textureSky,
+          side: THREE.DoubleSide,
+        });
+        const sky = new THREE.Mesh(
+          new THREE.SphereGeometry(30, 32, 32),
+          materialSky
+        );
+        scene.add(sky);
+
+        // Ground
+        const textureGround = textureLoader.load(
+          "https://h6qcvv.csb.app/grass.jpg",
+          function (texture) {
+            texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+            texture.repeat.set(60, 60);
+          }
+        );
+        const materialGround = new THREE.MeshStandardMaterial({
+          map: textureGround,
+        });
+
+        const plane = new THREE.Mesh(
+          new THREE.PlaneGeometry(60, 60),
+          materialGround
+        );
+        plane.rotation.set(-Math.PI / 2, 0, 0);
+        plane.receiveShadow = true;
+        floor = [plane];
+        scene.add(plane);
+
+        // Trees
+        new FBXLoader().load("https://h6qcvv.csb.app/Tree.fbx", (object) => {
+          object.scale.set(0.004, 0.004, 0.004);
+          createTree(object.clone(), [0, 0, -10]);
+          createTree(object.clone(), [5, 0, -3]);
+          createTree(object.clone(), [5, 0, 6]);
+          createTree(object.clone(), [15, 0, -20]);
+          createTree(object.clone(), [0, 0, 10]);
+          createTree(object.clone(), [-5, 0, 3]);
+          createTree(object.clone(), [-5, 0, -6]);
+          createTree(object.clone(), [-15, 0, 20]);
+        });
+
+        function createTree(tree, position) {
+          tree.position.set(position[0], position[1], position[2]);
+          scene.add(tree);
+        }
+
+        // Camera
+        camera = new THREE.PerspectiveCamera(
+          70,
+          window.innerWidth / window.innerHeight,
+          0.01,
+          40
+        );
+        camera.position.set(0, 3, 3);
+        camera.rotation.set(-0.4, 0, 0);
+
+        // Renderer
+        renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.xr.enabled = true;
+
+        container.appendChild(renderer.domElement);
+        document.body.appendChild(VRButton.createButton(renderer));
+
+        // === Controladores y Rig (IMPORTANTE: aquí dentro) ===
+        const controllerModelFactory = new XRControllerModelFactory();
+
+        controllerL = renderer.xr.getControllerGrip(0);
+        controllerR = renderer.xr.getControllerGrip(1);
+
+        // Rig del usuario
+        userRig = new THREE.Group();
+        userRig.add(camera);
+        userRig.add(controllerL);
+        userRig.add(controllerR);
+        scene.add(userRig);
+
+        // Rayo visual en controllerL
+        const rayGeom = new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(0, 0, 0),
+          new THREE.Vector3(0, 0, -50),
+        ]);
+        const rayLine = new THREE.Line(
+          rayGeom,
+          new THREE.LineBasicMaterial({ color: 0xffffff })
+        );
+        controllerL.add(rayLine);
+
+        // Modelo del mando L
+        const materialL = new THREE.MeshPhongMaterial({
+          shininess: 6,
+          transparent: true,
+          opacity: 0.8,
+        });
+        const model1 = controllerModelFactory.createControllerModel(
+          controllerL,
+          materialL
+        );
+        controllerL.add(model1);
+
+        // Esfera “radio de acción” en mando R
+        const materialSphereHand = new THREE.MeshPhongMaterial({
+          color: new THREE.Color("rgb(255,255,255)"),
+          shininess: 1,
+          transparent: true,
+          opacity: 0.2,
+        });
+        const sphereR = new THREE.Mesh(
+          new THREE.SphereGeometry(controllerActionRadius, 20, 20),
+          materialSphereHand
+        );
+        controllerR.add(sphereR);
+
+        // Modelo del mando R
+        const model2 =
+          controllerModelFactory.createControllerModel(controllerR);
+        controllerR.add(model2);
+
+        // Eventos
+        controllerL.addEventListener("selectstart", SelectEventRay);
+        controllerL.addEventListener("squeezestart", SelectEventRay);
+
+        controllerR.addEventListener("selectstart", SelectEventGrab);
+        controllerR.addEventListener("selectend", SelectEventGrabEnd);
+
+        renderer.setAnimationLoop(render);
+
+        window.addEventListener("resize", onWindowResize);
+      }
+
+      function initScene() {
+        const light = new THREE.HemisphereLight(0xffffbb, 0x080820, 1);
+        light.position.set(0.5, 1, 0.25);
+        scene.add(light);
+
+        AddObjects();
+
+        function AddObjects() {
+          const material = new THREE.MeshPhongMaterial({
+            shininess: 6,
+            flatShading: true,
+            transparent: true,
+            opacity: 0.8,
+          });
+
+          SetObject(
+            new THREE.CylinderGeometry(0.2, 0.2, 1, 32),
+            material.clone(),
+            [-0.5, 1.5, 0],
+            new THREE.Color("rgb(226,35,0)")
+          );
+          SetObject(
+            new THREE.BoxGeometry(1, 1, 1),
+            material.clone(),
+            [0.5, 1.5, 0],
+            new THREE.Color("rgb(100,100, 255)")
+          );
+          SetObject(
+            new THREE.SphereGeometry(0.6, 20, 20),
+            material.clone(),
+            [0, 1.5, -0.5],
+            new THREE.Color("rgb(0,255,0)")
+          );
+
+          function SetObject(geometry, mat, position, color) {
+            mat.color = color;
+            const mesh = new THREE.Mesh(geometry, mat);
+            mesh.position.set(position[0], position[1], position[2]);
+            mesh.scale.set(0.1, 0.1, 0.1);
+            scene.add(mesh);
+
+            // IMPORTANT: guardar en objects para ray/grab
+            objects.push(mesh);
+            return mesh;
+          }
+        }
+        const discs = [];
+        const discHeight = 0.08;
+        const baseY = 0.05; // altura donde empieza la pila
+        const pegX = -0.8; // x del poste 1 (ajusta)
+        const pegZ = 0; // z del poste 1
+        const discCount = 5; // nº de anillos
+
+        for (let i = 0; i < discCount; i++) {
+          const radius = 0.35 - i * 0.05; // grande -> pequeño
+          const geom = new THREE.CylinderGeometry(
+            radius,
+            radius,
+            discHeight,
+            32
+          );
+          const mat = new THREE.MeshStandardMaterial();
+          const disc = new THREE.Mesh(geom, mat);
+
+          disc.position.set(
+            pegX,
+            baseY + discHeight / 2 + i * discHeight,
+            pegZ
+          );
+
+          disc.userData = { size: i }; // útil luego para reglas (0 grande, 4 pequeño)
+          discs.push(disc);
+          scene.add(disc);
+        }
+      }
+
+      function render() {
+        // Grab
+        if (checkGrabbingR) CheckObjects();
+
+        // Movimiento con joystick derecho
+        const speed = 0.005;
+        const session = renderer.xr.getSession();
+
+        if (session) {
+          for (const source of session.inputSources) {
+            if (source.gamepad && source.handedness === "right") {
+              const xAxis = source.gamepad.axes[2] || 0;
+              const yAxis = source.gamepad.axes[3] || 0;
+
+              if (Math.abs(xAxis) > 0.1 || Math.abs(yAxis) > 0.1) {
+                const moveVector = new THREE.Vector3(
+                  xAxis * speed,
+                  0,
+                  yAxis * speed
+                );
+
+                const euler = new THREE.Euler(0, 0, 0, "YXZ");
+                euler.setFromQuaternion(camera.quaternion);
+                euler.x = 0;
+                euler.z = 0;
+
+                const yawQuaternion = new THREE.Quaternion();
+                yawQuaternion.setFromEuler(euler);
+
+                moveVector.applyQuaternion(yawQuaternion);
+
+                userRig.position.add(moveVector);
+              }
+            }
+          }
+        }
+
+        renderer.render(scene, camera);
+      }
+
+      function SelectEventGrab() {
+        checkGrabbingR = true;
+      }
+
+      function SelectEventGrabEnd() {
+        checkGrabbingR = false;
+        // soltar: volver a “colgar” objetos de la escena
+        for (let i = 0; i < objects.length; i++) scene.attach(objects[i]);
+      }
+
+      function CheckObjects() {
+        for (let i = 0; i < objects.length; i++) {
+          const dx = controllerR.position.x - objects[i].position.x;
+          const dy = controllerR.position.y - objects[i].position.y;
+          const dz = controllerR.position.z - objects[i].position.z;
+
+          const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+          if (dist <= controllerActionRadius) {
+            controllerR.attach(objects[i]);
+          }
+        }
+      }
+
+      function SelectEventRay() {
+        const raycaster = new THREE.Raycaster();
+        const tempMatrix = new THREE.Matrix4();
+
+        const intersections = getIntersections(controllerL);
+
+        for (let i = 0; i < intersections.length; i++) {
+          const intersection = intersections[i];
+
+          // mover objetos “seleccionables”
+          if (objects.includes(intersection.object)) {
+            const obj = intersection.object;
+            obj.position.set(
+              controllerL.position.x + userRig.position.x,
+              controllerL.position.y,
+              controllerL.position.z + userRig.position.z
+            );
+          }
+
+          // teletransporte al suelo
+          if (floor.includes(intersection.object)) {
+            userRig.position.set(
+              intersection.point.x,
+              userRig.position.y,
+              intersection.point.z
+            );
+          }
+        }
+
+        function getIntersections(controller) {
+          tempMatrix.identity().extractRotation(controller.matrixWorld);
+          raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+          raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+          return raycaster.intersectObjects(scene.children, true);
+        }
+      }
+
+      function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      }
+    </script>
+  </body>
+</html>
