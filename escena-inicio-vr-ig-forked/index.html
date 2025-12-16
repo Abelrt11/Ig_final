@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <title>VR Towers of Hanoi</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r126/three.js"></script>
+  </head>
+
+  <body>
+    <script type="module">
+      import { VRButton } from "https://unpkg.com/three@0.126.0/examples/jsm/webxr/VRButton.js";
+      import { FBXLoader } from "https://unpkg.com/three@0.126.0/examples/jsm/loaders/FBXLoader.js";
+      import { XRControllerModelFactory } from "https://unpkg.com/three@0.126.0/examples/jsm/webxr/XRControllerModelFactory.js";
+
+      let scene, camera, renderer;
+      let controllerRight = null;
+      let controllerLeft = null;
+      let grabbedDisk = null;
+
+      const textureLoader = new THREE.TextureLoader();
+
+      const pegs = [
+        { x: -0.6, stack: [] },
+        { x: 0.0, stack: [] },
+        { x: 0.6, stack: [] },
+      ];
+      const disks = [];
+
+      init();
+      renderer.setAnimationLoop(render);
+
+      function init() {
+        scene = new THREE.Scene();
+
+        scene.add(
+          new THREE.Mesh(
+            new THREE.SphereGeometry(30, 32, 32),
+            new THREE.MeshBasicMaterial({
+              map: textureLoader.load("https://h6qcvv.csb.app/sky.jpg"),
+              side: THREE.DoubleSide,
+            })
+          )
+        );
+
+        const groundTex = textureLoader.load(
+          "https://h6qcvv.csb.app/grass.jpg",
+          (t) => {
+            t.wrapS = t.wrapT = THREE.RepeatWrapping;
+            t.repeat.set(60, 60);
+          }
+        );
+
+        const ground = new THREE.Mesh(
+          new THREE.PlaneGeometry(60, 60),
+          new THREE.MeshStandardMaterial({ map: groundTex })
+        );
+        ground.rotation.x = -Math.PI / 2;
+        scene.add(ground);
+
+        new FBXLoader().load("https://h6qcvv.csb.app/Tree.fbx", (obj) => {
+          obj.scale.set(0.004, 0.004, 0.004);
+          [
+            [0, 0, -10],
+            [5, 0, -3],
+            [-5, 0, 6],
+            [-5, 0, -6],
+          ].forEach((p) => {
+            const t = obj.clone();
+            t.position.set(...p);
+            scene.add(t);
+          });
+        });
+
+        scene.add(new THREE.HemisphereLight(0xffffbb, 0x080820, 1));
+
+        camera = new THREE.PerspectiveCamera(
+          70,
+          window.innerWidth / window.innerHeight,
+          0.01,
+          40
+        );
+        camera.position.set(0, 1.6, 2);
+
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.xr.enabled = true;
+        document.body.appendChild(renderer.domElement);
+        document.body.appendChild(VRButton.createButton(renderer));
+
+        const factory = new XRControllerModelFactory();
+
+        for (let i = 0; i < 2; i++) {
+          const controller = renderer.xr.getController(i);
+          const grip = renderer.xr.getControllerGrip(i);
+
+          grip.add(factory.createControllerModel(grip));
+          scene.add(grip);
+          scene.add(controller);
+
+          controller.addEventListener("connected", (event) => {
+            if (event.data.handedness === "right") {
+              controllerRight = controller;
+
+              controllerRight.addEventListener("selectstart", grabDisk);
+              controllerRight.addEventListener("selectend", releaseDisk);
+
+              /* 🔦 RAYO VISIBLE */
+              const rayGeometry = new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(0, 0, 0),
+                new THREE.Vector3(0, 0, -1),
+              ]);
+              const rayMaterial = new THREE.LineBasicMaterial({
+                color: 0xffffff,
+              });
+              const ray = new THREE.Line(rayGeometry, rayMaterial);
+              ray.scale.z = 2;
+              controllerRight.add(ray);
+            }
+
+            if (event.data.handedness === "left") {
+              controllerLeft = controller;
+            }
+          });
+        }
+
+        createHanoi();
+      }
+
+      function createHanoi() {
+        pegs.forEach((p) => {
+          const peg = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.02, 0.02, 0.5, 16),
+            new THREE.MeshStandardMaterial({ color: 0xaaaaaa })
+          );
+          peg.position.set(p.x, 0.25, 0);
+          scene.add(peg);
+        });
+
+        const base = new THREE.Mesh(
+          new THREE.BoxGeometry(2, 0.05, 0.6),
+          new THREE.MeshStandardMaterial({ color: 0x7a4a21 })
+        );
+        base.position.set(0, 0.025, 0);
+        scene.add(base);
+
+        for (let size = 2; size >= 0; size--) {
+          const r = 0.15 + size * 0.05;
+          const disk = new THREE.Mesh(
+            new THREE.CylinderGeometry(r, r, 0.05, 32),
+            new THREE.MeshStandardMaterial({
+              color: new THREE.Color(`hsl(${size * 70},80%,50%)`),
+            })
+          );
+
+          disk.userData.size = size;
+          disk.userData.peg = 0;
+          pegs[0].stack.push(disk);
+          disks.push(disk);
+          scene.add(disk);
+        }
+
+        updateDiskPositions();
+      }
+
+      function grabDisk() {
+        if (!controllerRight || grabbedDisk) return;
+
+        const raycaster = new THREE.Raycaster();
+        const tempMatrix = new THREE.Matrix4();
+
+        tempMatrix.identity().extractRotation(controllerRight.matrixWorld);
+        raycaster.ray.origin.setFromMatrixPosition(controllerRight.matrixWorld);
+        raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+
+        const intersects = raycaster.intersectObjects(disks);
+        if (intersects.length === 0) return;
+
+        const disk = intersects[0].object;
+        const peg = pegs[disk.userData.peg];
+
+        if (peg.stack[peg.stack.length - 1] !== disk) return;
+
+        grabbedDisk = disk;
+        peg.stack.pop();
+        controllerRight.attach(disk);
+      }
+
+      function releaseDisk() {
+        if (!grabbedDisk || !controllerRight) return;
+
+        let closestPeg = pegs.reduce((a, b) =>
+          Math.abs(controllerRight.position.x - a.x) <
+          Math.abs(controllerRight.position.x - b.x)
+            ? a
+            : b
+        );
+
+        const top = closestPeg.stack[closestPeg.stack.length - 1];
+        scene.attach(grabbedDisk);
+
+        if (!top || top.userData.size > grabbedDisk.userData.size) {
+          grabbedDisk.userData.peg = pegs.indexOf(closestPeg);
+          closestPeg.stack.push(grabbedDisk);
+        } else {
+          pegs[grabbedDisk.userData.peg].stack.push(grabbedDisk);
+        }
+
+        grabbedDisk = null;
+        updateDiskPositions();
+      }
+
+      function updateDiskPositions() {
+        pegs.forEach((peg) => {
+          peg.stack.forEach((disk, i) => {
+            disk.position.set(peg.x, 0.05 + i * 0.05, 0);
+            disk.rotation.set(0, 0, 0);
+          });
+        });
+      }
+
+      function render() {
+        renderer.render(scene, camera);
+      }
+    </script>
+  </body>
+</html>
